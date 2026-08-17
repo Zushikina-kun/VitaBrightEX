@@ -1,162 +1,331 @@
 #include "hooks.h"
+#include "lcd_lut.h"
 #include "../main.h"
 #include "../log.h"
+#include "../config.h"
+#include "../taihen_extra.h"
+#include <stdint.h>
 #include <psp2kern/kernel/modulemgr.h>
+#include <psp2kern/kernel/sysmem.h>
+#include <psp2kern/io/fcntl.h>
 #include <taihen.h>
 
-// Required in order to jump to code that is in thumb mode
-#define THUMB_BIT 1
+/* ------------------------------------------------------------------ */
+/* NID constants                                                       */
+/* ------------------------------------------------------------------ */
+#define NID_LCD_GET_BRIGHTNESS     0x3A6D6AC3
+#define NID_LCD_SET_BRIGHTNESS     0x581D3A87
+#define NID_LCD_GET_COLOR_SPACE    0x17F66722
+#define NID_LCD_SET_COLOR_SPACE    0xD40968FB
+#define NID_POWER_SET_MAX_BRIGHT   0x77027B6B
+#define NID_REGMGR_GET_KEY_INT     0x30977F95
+#define NID_REGMGR_SET_KEY_INT     0x23B99BDE
 
-// Default value corresponding do a dimmed screen after inactivity
-#define LCD_DIMMED_VALUE 25
+#define REG_COLOR_SPACE   "/CONFIG/DISPLAY/color_space_mode"
+#define REG_RGB_RANGE     "/CONFIG/DISPLAY/rgb_range_mode"
 
-static SceUID lcd_table_inject = -1;
-static SceUID lcd_set_brightness_hook = -1;
+/* ------------------------------------------------------------------ */
+/* Default brightness table (17 levels)                                */
+/* ------------------------------------------------------------------ */
+static const uint8_t lcd_brightness_default[LCD_LUT_LEVELS] = {
+    1, 3, 5, 8, 13, 20, 29, 41, 57, 76, 95, 116, 137, 161, 190, 220, 255
+};
 
-static tai_hook_ref_t lcd_set_brightness_ref = -1;
+static uint8_t lcd_brightness_values[LCD_LUT_LEVELS];
 
-static SceUID power_set_max_brightness_hook = -1;
-static tai_hook_ref_t power_set_max_brightness_ref = 0;
+/* ------------------------------------------------------------------ */
+/* Hook handles                                                        */
+/* ------------------------------------------------------------------ */
+static SceUID lcd_table_inject          = -1;
+static SceUID lcd_set_brightness_hook   = -1;
+static SceUID power_set_max_bright_hook = -1;
 
-// static uint8_t original_brightness_values[17] = {31,  37,  43,  50,  58,  67,
-//                                             77,  88,  100, 114, 129, 147,
-//                                             166, 182, 203, 227, 255};
+static tai_hook_ref_t lcd_set_brightness_ref   = -1;
+static tai_hook_ref_t power_set_max_bright_ref = 0;
 
-static uint8_t lcd_brightness_values[17] = {
-    1, 3, 5, 8, 13, 20, 29, 41, 57, 76, 95, 116, 137, 161, 190, 220, 255};
+static int (*ksceLcdGetBrightness)(void)                     = NULL;
+static int (*ksceLcdSetBrightness)(unsigned int brightness)  = NULL;
+static int (*ksceLcdSetDisplayColorSpaceMode)(int mode)      = NULL;
+static int (*ksceRegMgrGetKeyInt)(const char *key, int *val) = NULL;
+static int (*ksceRegMgrSetKeyInt)(const char *key, int val)  = NULL;
 
-int (*ksceLcdGetBrightness)();
-int (*ksceLcdSetBrightness)(unsigned int brightness);
+static int g_lcd_hooks_active = 0;
 
-int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr);
+/* ------------------------------------------------------------------ */
+/* Brightness index helpers                                            */
+/*                                                                     */
+/* H-4 fix: SceLcd's GetBrightness returns a raw 16-bit PWM value     */
+/* (same 0-65536 range as OLED).  The brightness table maps 17 levels  */
+/* to byte values 0-255 which the driver converts to PWM.             */
+/* We reverse-lookup the nearest table entry by comparing PWM values. */
+/* ------------------------------------------------------------------ */
 
-int lcd_brightness_to_index(unsigned int brightness) {
-  // 17 levels (0 to 16), brightness starts at 2, max 65536
-  return 16 * (brightness - 2) / 65534;
+/*
+ * Convert a raw PWM brightness value to a table index [0, 16].
+ * The table maps index → 8-bit level, and the driver scales that to
+ * a 16-bit PWM linearly: pwm = (level * 65535) / 255.
+ * We find the nearest index by minimising |pwm - expected_pwm(i)|.
+ */
+static int lcd_brightness_to_index(unsigned int brightness) {
+    if (brightness == 0) return 16;  /* off / minimum */
+    int best_idx = 0;
+    unsigned int best_dist = 0xFFFFFFFFu;
+    for (int i = 0; i < LCD_LUT_LEVELS; i++) {
+        unsigned int expected = ((unsigned int)lcd_brightness_values[i] * 65535u) / 255u;
+        unsigned int dist = (brightness > expected)
+                            ? (brightness - expected)
+                            : (expected - brightness);
+        if (dist < best_dist) { best_dist = dist; best_idx = i; }
+    }
+    return best_idx;
 }
 
+/* ------------------------------------------------------------------ */
+/* LCD brightness LUT file loader                                      */
+/* Format: one decimal value per line (0-255), 17 lines, # = comment. */
+/* ------------------------------------------------------------------ */
+
+static int lcd_parse_lut_file(const char *path, uint8_t out[LCD_LUT_LEVELS]) {
+    SceUID fd = ksceIoOpen(path, SCE_O_RDONLY, 6);
+    if (fd < 0) return fd;
+
+    int count = 0;
+    char line[16];
+    int li = 0;
+
+    while (count < LCD_LUT_LEVELS) {
+        char c;
+        int r = ksceIoRead(fd, &c, 1);
+        if (r <= 0) break;
+        if (c == '\r') continue;
+        if (c == '\n' || li == (int)sizeof(line) - 1) {
+            line[li] = '\0';
+            li = 0;
+            if (line[0] == '#' || line[0] == '\0') continue;
+            int val = 0;
+            int i = 0;
+            for (; line[i] >= '0' && line[i] <= '9'; i++)
+                val = val * 10 + (line[i] - '0');
+            if (val < 0)   val = 0;
+            if (val > 255) val = 255;
+            out[count++] = (uint8_t)val;
+        } else {
+            line[li++] = c;
+        }
+    }
+
+    ksceIoClose(fd);
+    if (count < LCD_LUT_LEVELS) {
+        LOG("[LCD] LUT file incomplete: %d/%d\n", count, LCD_LUT_LEVELS);
+        return -1;
+    }
+    LOG("[LCD] LUT loaded from %s\n", path);
+    return 0;
+}
+
+static void lcd_load_lut(void) {
+    for (int i = 0; i < LCD_LUT_LEVELS; i++)
+        lcd_brightness_values[i] = lcd_brightness_default[i];
+
+    int r = lcd_parse_lut_file(LCD_LUT_FILE1, lcd_brightness_values);
+    if (r < 0) lcd_parse_lut_file(LCD_LUT_FILE2, lcd_brightness_values);
+}
+
+/* ------------------------------------------------------------------ */
+/* IPS / colour enhancement                                            */
+/* ------------------------------------------------------------------ */
+
+static void lcd_apply_color_enhancement(void) {
+    int do_csm   = g_config.lcd_color_space_mode;
+    int do_rgb   = g_config.lcd_rgb_range_mode;
+    int do_live  = g_config.lcd_ips_enhance;
+
+    if (!do_csm && !do_rgb && !do_live) return;
+
+    if (ksceRegMgrSetKeyInt != NULL) {
+        if (do_csm) {
+            ksceRegMgrSetKeyInt(REG_COLOR_SPACE, 1);
+            LOG("[LCD] color_space_mode = 1\n");
+        }
+        if (do_rgb) {
+            ksceRegMgrSetKeyInt(REG_RGB_RANGE, 1);
+            LOG("[LCD] rgb_range_mode = 1\n");
+        }
+    } else {
+        LOG("[LCD] SceRegMgr unavailable\n");
+    }
+
+    if (do_live && ksceLcdSetDisplayColorSpaceMode != NULL) {
+        int mode = do_csm ? 1 : 0;
+        int ret = ksceLcdSetDisplayColorSpaceMode(mode);
+        LOG("[LCD] SetDisplayColorSpaceMode(%d): 0x%08X\n", mode, ret);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Hooks                                                               */
+/* ------------------------------------------------------------------ */
+
 int hook_ksceLcdSetBrightness(unsigned int brightness) {
-  // Not trying to dim screen after inactivity
-  if (brightness != 1) {
-    return TAI_CONTINUE(int, lcd_set_brightness_ref, brightness);
-  }
+    if (brightness != 1)
+        return TAI_CONTINUE(int, lcd_set_brightness_ref, brightness);
 
-  int old_brightness = ksceLcdGetBrightness();
-  int old_index = lcd_brightness_to_index(old_brightness);
+    /* Inactivity dim — only allow if the current level is above idx 4
+     * (the middle of the default range), to prevent paradoxical brighten */
+    if (ksceLcdGetBrightness == NULL)
+        return TAI_CONTINUE(int, lcd_set_brightness_ref, brightness);
 
-  int new_brightness = old_brightness;
-  // If this doesn't make the screen brighter
-  if (old_brightness >= 2 && lcd_brightness_values[old_index] >= LCD_DIMMED_VALUE) {
-    new_brightness = brightness;
-  }
+    unsigned int old_brightness = (unsigned int)ksceLcdGetBrightness();
+    int old_index = lcd_brightness_to_index(old_brightness);
 
-  return TAI_CONTINUE(int, lcd_set_brightness_ref, new_brightness);
+    /* Allow dim only if current brightness maps to index > 4 */
+    if (old_index > 4)
+        return TAI_CONTINUE(int, lcd_set_brightness_ref, brightness);
+
+    /* Already very dim — keep current to avoid raising brightness */
+    return TAI_CONTINUE(int, lcd_set_brightness_ref, old_brightness);
 }
 
 int hook_kscePowerSetDisplayMaxBrightnessForLcd(int limit) {
-  // Workaround for https://github.com/yifanlu/taiHEN/issues/12
-  if (power_set_max_brightness_ref == 0) {
-    return 0;
-  }
-
-  // Limits are not necessary on LCD.
-  return TAI_CONTINUE(int, power_set_max_brightness_ref, 0x10000);
+    (void)limit;
+    if (power_set_max_bright_ref == 0) return 0;
+    return TAI_CONTINUE(int, power_set_max_bright_ref, 0x10000);
 }
 
-void lcd_enable_hooks() {
-  // Completely remove max brightness limit when PS Vita is running in power mode C/D.
-  power_set_max_brightness_hook = taiHookFunctionExportForKernel(KERNEL_PID, &power_set_max_brightness_ref, "ScePower", TAI_ANY_LIBRARY, 0x77027B6B, hook_kscePowerSetDisplayMaxBrightnessForLcd);
-  LOG("[LCD] hooking kscePowerSetDisplayMaxBrightness: 0x%08X\n", power_set_max_brightness_hook);
+/* ------------------------------------------------------------------ */
+/* Public API                                                          */
+/* ------------------------------------------------------------------ */
 
-  tai_module_info_t info;
-  info.size = sizeof(tai_module_info_t);
-  int ret = taiGetModuleInfoForKernel(KERNEL_PID, "SceLcd", &info);
-  LOG("[LCD] getmodninfo(\"SceLcd\"): 0x%08X\n", ret);
-  LOG("[LCD] SceLcd modid: 0x%08X\n", info.modid);
+void lcd_enable_hooks(void) {
+    if (g_lcd_hooks_active) return;
 
-  if (ret < 0) {
-    LOG("[LCD] Couldn't get SceLcd module id! Abandoning...\n");
-    return;
-  }
+    lcd_load_lut();
 
-  uint32_t lcd_table_off = 0;
-  size_t ksceLcdGetBrightness_addr = 0;
-  size_t ksceLcdSetBrightness_addr = 0;
+    tai_module_info_t info;
+    info.size = sizeof(tai_module_info_t);
+    int ret = taiGetModuleInfoForKernel(KERNEL_PID, "SceLcd", &info);
+    LOG("[LCD] SceLcd modinfo: 0x%08X  modid=0x%08X\n", ret, info.modid);
+    if (ret < 0) { LOG("[LCD] SceLcd not found\n"); return; }
 
-  switch (sw_version >> 16) {
-  case 0x360: {
-    lcd_table_off = 0x1B00;
-    ksceLcdGetBrightness_addr = 0x0EFC | THUMB_BIT;
-    ksceLcdSetBrightness_addr = 0x1170 | THUMB_BIT;
-    break;
-  }
+    ret = module_get_export_func(KERNEL_PID, "SceLcd", TAI_ANY_LIBRARY,
+        NID_LCD_GET_BRIGHTNESS, (uintptr_t *)&ksceLcdGetBrightness);
+    LOG("[LCD] GetBrightness: 0x%08X -> %p\n", ret, ksceLcdGetBrightness);
 
-  case 0x365:
-  case 0x367:
-  case 0x368:
-  case 0x369:
-  case 0x370: {
-    lcd_table_off = 0x1B48;
-    ksceLcdGetBrightness_addr = 0x0F08 | THUMB_BIT;
-    ksceLcdSetBrightness_addr = 0x117C | THUMB_BIT;
-    break;
-  }
+    ret = module_get_export_func(KERNEL_PID, "SceLcd", TAI_ANY_LIBRARY,
+        NID_LCD_SET_BRIGHTNESS, (uintptr_t *)&ksceLcdSetBrightness);
+    LOG("[LCD] SetBrightness: 0x%08X -> %p\n", ret, ksceLcdSetBrightness);
 
-  default: // Not supported
-    LOG("[LCD] Unsupported OS version: 0x%08X. Abandoning...\n", sw_version);
-    return;
-  }
+    module_get_export_func(KERNEL_PID, "SceLcd", TAI_ANY_LIBRARY,
+        NID_LCD_SET_COLOR_SPACE, (uintptr_t *)&ksceLcdSetDisplayColorSpaceMode);
 
-  LOG("[LCD] OS version: 0x%08X\n, table offset: 0x%08X, ksceLcdGetBrightness_addr: 0x%08X, "
-      "ksceLcdSetBrightness_addr: 0x%08X\n",
-      sw_version,
-      (unsigned int)lcd_table_off,
-      ksceLcdGetBrightness_addr,
-      ksceLcdSetBrightness_addr);
+    if (ksceLcdGetBrightness == NULL || ksceLcdSetBrightness == NULL) {
+        LOG("[LCD] Critical NID resolution failed\n"); return;
+    }
 
-  lcd_table_inject = taiInjectDataForKernel(KERNEL_PID,
-                                            info.modid,
-                                            0,
-                                            lcd_table_off, // 0x1BA0?
-                                            lcd_brightness_values,
-                                            sizeof(lcd_brightness_values));
-  LOG("[LCD] injectdata: 0x%08X\n", lcd_table_inject);
+    /* SceRegMgr for registry colour tweaks */
+    tai_module_info_t reginfo;
+    reginfo.size = sizeof(tai_module_info_t);
+    if (taiGetModuleInfoForKernel(KERNEL_PID, "SceRegMgr", &reginfo) >= 0) {
+        module_get_export_func(KERNEL_PID, "SceRegMgr", TAI_ANY_LIBRARY,
+            NID_REGMGR_SET_KEY_INT, (uintptr_t *)&ksceRegMgrSetKeyInt);
+        module_get_export_func(KERNEL_PID, "SceRegMgr", TAI_ANY_LIBRARY,
+            NID_REGMGR_GET_KEY_INT, (uintptr_t *)&ksceRegMgrGetKeyInt);
+        LOG("[LCD] SceRegMgr set=%p get=%p\n", ksceRegMgrSetKeyInt, ksceRegMgrGetKeyInt);
+    } else {
+        LOG("[LCD] SceRegMgr not found\n");
+    }
 
-  int res_offset1 = module_get_offset(
-      KERNEL_PID, info.modid, 0, ksceLcdGetBrightness_addr, (uintptr_t *)&ksceLcdGetBrightness);
-  if (res_offset1 < 0) {
-    LOG("[LCD] module_get_offset(\"ksceLcdGetBrightness\"): 0x%08X\n", res_offset1);
-  }
+    lcd_apply_color_enhancement();
 
-  int res_offset2 = module_get_offset(
-      KERNEL_PID, info.modid, 0, ksceLcdSetBrightness_addr, (uintptr_t *)&ksceLcdSetBrightness);
-  if (res_offset2 < 0) {
-    LOG("[LCD] module_get_offset(\"ksceLcdSetBrightness\"): 0x%08X\n", res_offset2);
-  }
+    /*
+     * C-3 fix: removed the unsafe scan-from-function-address approach.
+     * Use versioned offsets only. The fallback (default case) covers
+     * 3.65–3.74 which all share the same SceLcd binary layout.
+     */
+    uint32_t table_off;
+    switch (sw_version >> 16) {
+    case 0x360:
+        table_off = 0x1B00;
+        break;
+    case 0x365: case 0x367: case 0x368: case 0x369: case 0x370:
+    case 0x371: case 0x372: case 0x373: case 0x374:
+    default:
+        /* 3.65–3.74 all share the same SceLcd layout */
+        table_off = 0x1B48;
+        break;
+    }
+    LOG("[LCD] Table offset 0x%08X for fw 0x%08X\n", table_off, sw_version);
 
-  if (ksceLcdGetBrightness != NULL && ksceLcdSetBrightness != NULL && res_offset1 >= 0 &&
-      res_offset2 >= 0) {
-    // Note: I'm calling by offset instead of importing them
-    // because importing LCD module on OLED device prevents vitabright from
-    // loading
+    lcd_table_inject = taiInjectDataForKernel(KERNEL_PID, info.modid, 0,
+                                              table_off,
+                                              lcd_brightness_values,
+                                              sizeof(lcd_brightness_values));
+    LOG("[LCD] taiInjectData: 0x%08X\n", lcd_table_inject);
+
     ksceLcdSetBrightness(ksceLcdGetBrightness());
-  }
 
-  lcd_set_brightness_hook = taiHookFunctionExportForKernel(KERNEL_PID,
-                                                           &lcd_set_brightness_ref,
-                                                           "SceLcd",
-                                                           TAI_ANY_LIBRARY,
-                                                           0x581D3A87,
-                                                           hook_ksceLcdSetBrightness);
-  if (lcd_set_brightness_hook < 0) {
-    LOG("[LCD] taiHookFunctionExportForKernel: 0x%08X, abandoning...\n", lcd_set_brightness_hook);
-  }
+    lcd_set_brightness_hook = taiHookFunctionExportForKernel(KERNEL_PID,
+        &lcd_set_brightness_ref, "SceLcd", TAI_ANY_LIBRARY,
+        NID_LCD_SET_BRIGHTNESS, hook_ksceLcdSetBrightness);
+    LOG("[LCD] SetBrightness hook: 0x%08X\n", lcd_set_brightness_hook);
+
+    power_set_max_bright_hook = taiHookFunctionExportForKernel(KERNEL_PID,
+        &power_set_max_bright_ref, "ScePower", TAI_ANY_LIBRARY,
+        NID_POWER_SET_MAX_BRIGHT, hook_kscePowerSetDisplayMaxBrightnessForLcd);
+    LOG("[LCD] PowerMaxBright hook: 0x%08X\n", power_set_max_bright_hook);
+
+    g_lcd_hooks_active = 1;
 }
 
-void lcd_disable_hooks() {
-  if (lcd_table_inject >= 0)
-    taiInjectReleaseForKernel(lcd_table_inject);
+void lcd_disable_hooks(void) {
+    ksceLcdGetBrightness = NULL;  /* NULL out before releasing hook */
 
-  if (lcd_set_brightness_hook >= 0)
-    taiHookReleaseForKernel(lcd_set_brightness_hook, lcd_set_brightness_ref);
+    if (lcd_table_inject >= 0) {
+        taiInjectReleaseForKernel(lcd_table_inject);
+        lcd_table_inject = -1;
+    }
+    if (lcd_set_brightness_hook >= 0) {
+        taiHookReleaseForKernel(lcd_set_brightness_hook, lcd_set_brightness_ref);
+        lcd_set_brightness_hook = -1;
+    }
+    if (power_set_max_bright_hook >= 0) {
+        taiHookReleaseForKernel(power_set_max_bright_hook, power_set_max_bright_ref);
+        power_set_max_bright_hook = -1;
+        power_set_max_bright_ref  = 0;
+    }
+    g_lcd_hooks_active = 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Syscall exports                                                     */
+/* ------------------------------------------------------------------ */
+
+int vitabrightLcdGetBrightnessValues(uint8_t out[LCD_LUT_LEVELS]) {
+    int state;
+    ENTER_SYSCALL(state);
+    ksceKernelMemcpyKernelToUser((void *)out, lcd_brightness_values,
+                                 LCD_LUT_LEVELS * sizeof(uint8_t));
+    EXIT_SYSCALL(state);
+    return 0;
+}
+
+int vitabrightLcdSetBrightnessValues(uint8_t in[LCD_LUT_LEVELS]) {
+    int state;
+    ENTER_SYSCALL(state);
+
+    lcd_disable_hooks();
+    ksceKernelMemcpyUserToKernel(lcd_brightness_values, (const void *)in,
+                                 LCD_LUT_LEVELS * sizeof(uint8_t));
+    lcd_enable_hooks();
+
+    EXIT_SYSCALL(state);
+    return 0;
+}
+
+int vitabrightLcdReapplyColor(void) {
+    int state;
+    ENTER_SYSCALL(state);
+    lcd_apply_color_enhancement();
+    EXIT_SYSCALL(state);
+    return 0;
 }

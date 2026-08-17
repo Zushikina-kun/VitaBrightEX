@@ -1,0 +1,28 @@
+# VitaBrightEX — Panel 5 (AMS495QA01) balanced LUT
+# supplier_elective_data & 0xFF == 5  (0x805 etc.)
+# White-point normalised: blue channel tracked consistently with green
+# across all brightness rows to eliminate red/blue shift at low levels.
+# Format: 17 rows x 21 hex bytes, space-separated, LF line endings.
+# Row 0 = max brightness, Row 15 = min on-slider, Row 16 = inactivity dim.
+#
+# Extra-bright levels (above stock maximum)
+9C 9B BE CB D4 C8 BC C5 B4 DD DE D9 D4 CE D2 F6 E4 E4 2F 00 2F
+98 97 BA CB D3 C6 BA C3 B2 DC DD D8 D3 CD D0 F5 E1 E1 2F 00 2F
+# Stock levels (16 -> 10 on slider)
+94 93 B6 C9 D2 C5 B8 C2 B1 DA DC D6 D2 CB CE F4 DF DF 2F 00 2F
+91 90 B3 CB D4 C7 B8 C1 B1 DB DC D7 D1 CA CE F4 DB D2 2F 00 2F
+8E 8D B0 CC D5 C8 B9 C1 B1 DC DC D9 D2 C9 CD F4 DB D2 2F 00 2F
+8B 8A AC CD D6 C9 BA C2 B2 DD DC DA D2 C7 CB F4 DB D2 2F 00 2F
+88 87 A8 CD D6 C9 BC C2 B4 DB DB D9 D1 C6 CB F4 DA D0 2F 00 2F
+# 444 MHz max
+86 85 A5 CE D7 CA BB C1 B3 DB DB D9 D2 C6 CB F4 DA D0 2F 00 2F
+84 83 A2 D0 D8 CB BB C1 B4 DC DB D9 D2 C4 CA F4 DA D0 2F 00 2F
+82 81 9F D0 D8 CC BB C1 B3 DC DA DA D2 C2 C9 F4 DA D0 2F 00 2F
+80 7F 9D D0 D8 CC BD C2 B6 DD DA DA D2 C1 C9 F4 DA D0 2F 00 2F
+7E 7D 9B D1 D8 CC BC C1 B5 DC D9 DA D2 BC C7 F4 DA D0 2F 00 2F
+7C 7B 98 D1 D8 CC BE C2 B7 DD D9 DB D2 BD C7 F4 DA D0 2F 00 2F
+78 77 94 D2 D8 CC BF C1 B8 DC D8 DB D2 CF C7 F4 DA D0 2F 00 2F
+75 74 90 D4 D9 CE BE C0 B8 DE D8 DC D2 CF C7 F4 DA D0 2F 00 2F
+6D 6B 86 D5 DB D0 C0 BF BA DF D5 DB D3 95 C8 F4 DA D0 2F 00 2F
+# Inactivity dim
+5C 5E 77 DC E1 DA BC BE BD DD D6 D5 E3 4A DC AF B1 FC 2F 00 2F

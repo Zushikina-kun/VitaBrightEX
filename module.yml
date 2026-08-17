@@ -1,8 +1,8 @@
 vitabright:
   attributes: 0
   version:
-    major: 1
-    minor: 1
+    major: 3
+    minor: 0
   main:
     start: module_start
     stop: module_stop
@@ -10,8 +10,20 @@ vitabright:
     vitabright:
       syscall: true
       functions:
+        # --- Generic ---
         - vitabrightReload
+        # --- OLED (PS Vita 1000) ---
         - vitabrightOledGetLevel
         - vitabrightOledSetLevel
         - vitabrightOledGetLut
         - vitabrightOledSetLut
+        - vitabrightOledReload
+        - vitabrightOledGetPanelType
+        # --- LCD (PS Vita 2000) ---
+        - vitabrightLcdGetBrightnessValues
+        - vitabrightLcdSetBrightnessValues
+        - vitabrightLcdReapplyColor
+        # --- Screen Filter (both models) ---
+        - vitabrightFilterGetParams
+        - vitabrightFilterSetParams
+        - vitabrightFilterReset

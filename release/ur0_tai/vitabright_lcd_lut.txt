@@ -1,0 +1,29 @@
+# VitaBrightEX — LCD (PS Vita 2000) brightness table
+# 17 decimal values, one per line (range 0-255).
+# Lines starting with '#' are comments.
+#
+# Level 0  = maximum brightness (brightest)
+# Level 16 = minimum on-slider  (dimmest)
+#
+# This default table follows an approximate gamma-2.2 perceptual curve,
+# extended below and above the stock slider range.
+# Copy this file to ur0:/tai/vitabright_lcd_lut.txt to activate it.
+#
+# --- Values ---
+255
+220
+190
+161
+137
+116
+95
+76
+57
+41
+29
+20
+13
+8
+5
+3
+1
