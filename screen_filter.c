@@ -74,7 +74,6 @@ static int g_filter_funcs_resolved = 0;
 /* ------------------------------------------------------------------ */
 
 #define FP_ONE   (1 << 16)
-#define FP_HALF  (1 << 15)
 
 static int32_t fp_mul(int32_t a, int32_t b) {
     return (int32_t)(((int64_t)a * b) >> 16);
@@ -82,82 +81,6 @@ static int32_t fp_mul(int32_t a, int32_t b) {
 
 static int32_t float_to_fp(float f) {
     return (int32_t)(f * 65536.0f);
-}
-
-/*
- * M-3 fix: removed the spurious >>8. Correct 16.16→uint8 conversion.
- * v is in [0, FP_ONE] representing [0, 1.0].
- */
-static uint8_t fp_to_u8(int32_t v) {
-    int32_t out = (v * 255) >> 16;
-    if (out < 0)   return 0;
-    if (out > 255) return 255;
-    return (uint8_t)out;
-}
-
-/*
- * Approximate ln(x) for x in (0,1], result in 16.16.
- * Normalises to [0.5,1) via power-of-2 shifts, then uses
- * Taylor ln(1+t) for t in [-0.5, 0).
- */
-static int32_t fp_ln(int32_t x) {
-    const int32_t LN2 = 0xB172;  /* ln(2) in 16.16 */
-    if (x <= 0) return float_to_fp(-8.0f);  /* hard floor */
-
-    int shifts = 0;
-    while (x < FP_HALF) { x <<= 1; shifts++; }
-    while (x >= FP_ONE) { x >>= 1; shifts--; }
-    /* x in [FP_HALF, FP_ONE) → t = x - FP_ONE in [-FP_HALF, 0) */
-    int32_t t  = x - FP_ONE;
-    int32_t t2 = fp_mul(t, t);
-    int32_t t3 = fp_mul(t2, t);
-    int32_t t4 = fp_mul(t3, t);
-    /* ln(1+t) ≈ t - t²/2 + t³/3 - t⁴/4  (better accuracy for |t|≤0.5) */
-    int32_t result = t - (t2 >> 1) + t3 / 3 - (t4 >> 2);
-    result -= (int32_t)shifts * LN2;
-    return result;
-}
-
-/*
- * Approximate exp(x) for x in roughly [-8, 8], result in 16.16.
- * Range-reduces via ln2, then Taylor series.
- */
-static int32_t fp_exp(int32_t x) {
-    const int32_t LN2 = 0xB172;
-    /* Hard clamp to prevent infinite loops (L-4 fix applied in fp_pow) */
-    int n = 0;
-    while (x > LN2  && n < 30) { x -= LN2; n++; }
-    while (x < -LN2 && n > -30) { x += LN2; n--; }
-    int32_t x2 = fp_mul(x, x);
-    int32_t x3 = fp_mul(x2, x);
-    int32_t x4 = fp_mul(x3, x);
-    int32_t result = FP_ONE + x + (x2 >> 1) + x3 / 6 + x4 / 24;
-    if (result < 0) result = 0;
-    if (n > 0)  result <<= n;
-    else if (n < 0) result >>= (-n);
-    return result;
-}
-
-/*
- * pow(base, exp) both in 16.16.
- * L-4 fix: clamp the exponent×ln(base) product before passing to fp_exp
- * to prevent the loop-count from growing unbounded for very dark inputs.
- */
-static int32_t fp_pow(int32_t base, int32_t exp) {
-    if (base <= 0)      return 0;
-    if (base >= FP_ONE) return FP_ONE;
-    if (exp == FP_ONE)  return base;
-
-    int32_t ln_base = fp_ln(base);
-    int32_t product = fp_mul(exp, ln_base);
-
-    /* L-4 fix: clamp to safe range for fp_exp */
-    const int32_t MAX_EXP = float_to_fp(8.0f);
-    const int32_t MIN_EXP = float_to_fp(-8.0f);
-    if (product <= MIN_EXP) return 0;
-    if (product >= MAX_EXP) return FP_ONE;
-
-    return fp_exp(product);
 }
 
 /* ------------------------------------------------------------------ */
@@ -256,75 +179,6 @@ static void resolve_display_funcs(void) {
         ksceDisplaySetInvertColors, ksceDisplaySetColorSpaceMode, ksceIftuSetCscParams);
 
     g_filter_funcs_resolved = 1;
-}
-
-/* ------------------------------------------------------------------ */
-/* OLED filter application                                            */
-/*                                                                     */
-/* C-4 fix: copies lookupBase → lookupNew first, then modifies        */
-/* lookupNew in-place. Repeated calls always start from the clean     */
-/* base snapshot, preventing compounding drift.                       */
-/*                                                                     */
-/* H-2 fix: applies CCT white-point to R (bytes 0,1), B (byte 2),    */
-/* AND G (bytes 3,4,5) channels.                                      */
-/* ------------------------------------------------------------------ */
-
-static void apply_filter_to_oled_lut(void) {
-    const ScreenFilterParams *f = &g_screen_filter;
-
-    /* Start from clean base — prevents compounding on repeated calls */
-    for (int i = 0; i < LUT_SIZE; i++) lookupNew[i] = lookupBase[i];
-
-    int32_t wp[3];
-    cct_to_white_point(f->cct, wp);
-
-    int32_t fp_gamma    = float_to_fp(f->gamma);
-    int32_t fp_contrast = float_to_fp(f->contrast);
-    int32_t fp_bright   = float_to_fp(f->brightness);
-
-    for (int row = 0; row < LUT_ROWS - 1; row++) {
-        uint8_t *r = &lookupNew[row * LUT_LINE_SIZE];
-
-        /* Normalised input brightness for this row:
-         * row 0 = max (≈1.0), row 15 = min (≈0.06) */
-        int32_t in_level = FP_ONE - (row * (FP_ONE - float_to_fp(0.06f))) / 15;
-
-        /*
-         * Channel mapping:
-         *   slot 0 → byte 0 (R high),  wp[0] (red white point)
-         *   slot 1 → byte 1 (R low),   wp[0]
-         *   slot 2 → byte 2 (B gain),  wp[2] (blue white point)
-         *   slot 3 → byte 3 (G mid 1), wp[1] (H-2 fix: green white point)
-         *   slot 4 → byte 4 (G mid 2), wp[1]
-         *   slot 5 → byte 5 (G mid 3), wp[1]
-         */
-        static const int byte_idx[6] = { 0, 1, 2, 3, 4, 5 };
-        static const int wp_idx[6]   = { 0, 0, 2, 1, 1, 1 };
-
-        for (int ch = 0; ch < 6; ch++) {
-            int32_t level = fp_mul(fp_mul(fp_contrast, wp[wp_idx[ch]]), in_level);
-            level += fp_bright;
-            if (level < 0)       level = 0;
-            if (level > FP_ONE)  level = FP_ONE;
-            if (fp_gamma != FP_ONE)
-                level = fp_pow(level, fp_gamma);
-
-            uint8_t orig     = r[byte_idx[ch]];
-            uint8_t filtered = fp_to_u8(level);
-
-            /* Soft blend: limit deviation from base by ±0x30 to avoid
-             * destroying a carefully tuned LUT */
-            int delta = (int)filtered - (int)orig;
-            if (delta >  0x30) filtered = orig + 0x30;
-            if (delta < -0x30) filtered = (orig >= 0x30) ? orig - 0x30 : 0;
-
-            r[byte_idx[ch]] = filtered;
-        }
-    }
-
-    /* Hardware invert */
-    if (ksceDisplaySetInvertColors != NULL)
-        ksceDisplaySetInvertColors(0, f->invert ? 1 : 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -441,9 +295,32 @@ void screen_filter_load_config(void) {
 void screen_filter_apply(int is_oled) {
     resolve_display_funcs();
 
+    if (is_oled) {
+        /*
+         * OLED architecture note:
+         * The OLED panel's gamma LUT (SET_NORMAL_GAMMA_CONTROL) contains
+         * panel-specific calibration values loaded from the per-panel LUT
+         * file and post-processed by white-point normalisation. These bytes
+         * are panel control registers — NOT linear RGB pixel values.
+         * Applying a CCT colour matrix or gamma curve to these bytes via
+         * apply_filter_to_oled_lut() produces wrong results because the
+         * byte semantics don't map linearly to colour channels.
+         *
+         * The only safe filter operations on OLED are:
+         *   1. Hardware colour invert via sceDisplaySetInvertColorsForDriver
+         *
+         * CCT / gamma / contrast / brightness are intentionally NOT applied
+         * to OLED. The panel's calibrated LUT already looks correct.
+         * The vitabright LUT file is the right place to tune OLED colours.
+         */
+        if (ksceDisplaySetInvertColors != NULL)
+            ksceDisplaySetInvertColors(0, g_screen_filter.invert ? 1 : 0);
+        return;
+    }
+
+    /* LCD path — full filter via IFTU CSC matrix */
     if (filter_is_identity()) {
-        /* Restore identity */
-        if (!is_oled && ksceIftuSetCscParams != NULL) {
+        if (ksceIftuSetCscParams != NULL) {
             ksceIftuSetCscParams(0, 0, &CSC_IDENTITY);
             ksceIftuSetCscParams(0, 1, &CSC_IDENTITY);
         }
@@ -452,13 +329,7 @@ void screen_filter_apply(int is_oled) {
         return;
     }
 
-    if (is_oled) {
-        apply_filter_to_oled_lut();
-        /* Re-inject the modified lookupNew into the panel */
-        oled_reinject_lut();
-    } else {
-        apply_filter_to_lcd();
-    }
+    apply_filter_to_lcd();
 }
 
 void screen_filter_set_cct(uint16_t cct, int is_oled) {
@@ -473,7 +344,20 @@ void screen_filter_reset(int is_oled) {
     g_screen_filter.brightness   = 0.0f;
     g_screen_filter.invert       = 0;
     g_screen_filter.panel_enhance = 0;
-    screen_filter_apply(is_oled);
+    /* For OLED: only clear invert — don't touch the LUT */
+    if (is_oled) {
+        if (ksceDisplaySetInvertColors != NULL)
+            ksceDisplaySetInvertColors(0, 0);
+        return;
+    }
+    /* For LCD: restore identity CSC */
+    resolve_display_funcs();
+    if (ksceIftuSetCscParams != NULL) {
+        ksceIftuSetCscParams(0, 0, &CSC_IDENTITY);
+        ksceIftuSetCscParams(0, 1, &CSC_IDENTITY);
+    }
+    if (ksceDisplaySetInvertColors != NULL)
+        ksceDisplaySetInvertColors(0, 0);
 }
 
 /* ------------------------------------------------------------------ */
