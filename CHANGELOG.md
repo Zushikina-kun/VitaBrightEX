@@ -5,6 +5,61 @@ and between VitaBrightEX versions are documented here.
 
 ---
 
+## LUT Editor v3.1
+
+### Fixed
+
+**Remaining `draw_footer` call in `page_temp_draw`**
+One stale `draw_footer` call survived the v3.0 cleanup, still drawing a
+third overlapping hint bar at the bottom of the Colour tab. Removed.
+
+All issues found in the v3.0 code audit are now resolved:
+
+- `sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG_WIDE)` added at startup —
+  L2/R2 trigger bits now register reliably on all firmware versions
+- `g_pgf` checked for NULL after `vita2d_load_default_pgf`; exits cleanly
+  if font loading fails rather than crashing on the first draw call
+- `show_error_screen` is now only called after `g_pgf` is confirmed valid
+- Texture NULL crash: `g_ntex` now tracks only valid texture slots;
+  `vita2d_draw_texture` is guarded with a NULL check before calling
+- `vita2d_draw_texture_scale(1.0, 1.0)` replaced with plain `vita2d_draw_texture`
+- LUT tab navigation deadlock fixed: L1/R1 now switch tabs from the LUT
+  tab (L2/R2 still edit bytes there); page-aware hint bar says so explicitly
+- `init_from_plugin`: a fresh install with no saved config could produce
+  CCT = 0 (below minimum). Now validated and clamped to 6500K before matching
+- Enhancement preset matching: was using `abs(A+B)` which could give a
+  false-zero diff when gamma/contrast errors cancelled each other. Fixed to
+  use `abs(A) + abs(B)` (correct Manhattan distance)
+- All `draw_footer` calls removed from individual page draw functions;
+  single global page-aware hint bar now handles all pages (no more three
+  overlapping bars at the bottom of the screen)
+
+---
+
+## LUT Editor v3.0
+
+### Complete UI redesign
+
+- 4 tabbed pages: Colour Temperature | Screen Enhancement | Advanced | LUT
+- All cycling wraps correctly — can never get stuck or need to crash/restart
+- Colour page: 10 CCT presets (Neutral through Ember) + Custom with
+  Left/Right to adjust exact Kelvin value; applies live as you scroll
+- Enhance page: 8 display profiles — OLED Boost, IPS Fix, IPS+Boost,
+  VA Punch, TN Correction, sRGB, Night/Low Blue
+- Advanced page: gamma / contrast / brightness sliders; Triangle resets
+  to enhancement baseline; R1 for faster adjustment
+- LUT page: raw OLED byte editor; L2/R2 change byte value (no shoulder
+  button conflicts); L1/R1 switch tabs
+- X = apply + save to disk everywhere; persists across reboots
+- Start = save and exit; settings applied on exit too
+- Background test image (Select to cycle)
+- Status bar shows active preset combo and screen brightness level
+- "Saved!" flash indicator when settings written to disk
+- Vita 2000 (LCD): shows colour enhancement status; no crash on LCD units
+- On startup, reads current plugin settings and highlights matching presets
+
+---
+
 ## VitaBrightEX v1.2
 
 ### Fixed

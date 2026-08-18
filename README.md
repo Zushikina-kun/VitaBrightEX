@@ -200,24 +200,32 @@ night_mode_threshold = 6   # row 0–16; higher = activates at brighter levels
 
 ## LUT Editor companion app — controls
 
+The app has **4 tabs** — switch with **L2/R2** (or **L1/R1** on the LUT tab).
+
+| Tab | What it does |
+|---|---|
+| **Colour** | Pick a colour temperature preset. Applies to screen instantly as you scroll. |
+| **Enhance** | Pick a display profile that stacks on your colour choice (OLED Boost, IPS Fix, VA Punch, TN, Night etc.) |
+| **Advanced** | Fine-tune gamma / contrast / brightness sliders |
+| **LUT** | Raw OLED gamma byte editor — for power users only |
+
+### Controls
+
 | Button | Action |
 |---|---|
-| Triangle / Square | Previous / next LUT row (0 = max, 16 = inactivity dim) |
-| Left / Right | Move byte cursor within the row |
-| L1 / R1 | Jump cursor by 7 bytes (next colour group) |
-| Up / Down | Increase / decrease byte value **or** filter parameter (when L2 active) |
-| L2 | Cycle filter edit mode: LUT → CCT → Gamma → Contrast → Brightness |
-| R2 (held) | 10× faster adjustment for filter values |
-| Cross | Cycle test image (colorbars / matrix / TV) |
-| Circle | Reload LUT and filter settings from disk |
-| Select | Set screen brightness to the currently displayed LUT row |
-| Start | Save LUT to file + write filter params to `vitabrightex.cfg` |
+| Up / Down | Scroll through presets / move row selector |
+| Left / Right | Adjust custom CCT value (Colour tab) or slider value (Advanced tab) |
+| L2 / R2 | Switch tab left / right (all tabs except LUT) |
+| **L1 / R1** | **Switch tab from the LUT tab** (L2/R2 edit bytes there) |
+| X | Apply current settings **and save to disk** — persists across reboots |
+| Select | Cycle background test image |
+| Triangle | Reset all filters to neutral (Colour and Enhance tabs) or reset sliders to enhancement baseline (Advanced) |
+| Circle | Reload LUT and config from disk (LUT tab) |
+| Start | Save and exit app |
 
-The app displays the detected panel name (e.g. AMS495QA01) and the current screen
-filter parameters at the bottom of the screen.
+On the LUT tab: L2 = increase byte value, R2 = decrease byte value.
 
-On **Vita 2000**, the LUT editor shows LCD colour enhancement status and allows
-screen filter editing instead of the OLED LUT byte editor.
+On **Vita 2000 (LCD)**, the LUT tab shows a "not available" notice — use Colour and Enhance tabs instead.
 
 ---
 
