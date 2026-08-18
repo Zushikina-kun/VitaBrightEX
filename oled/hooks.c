@@ -336,11 +336,17 @@ int vitabrightOledGetLevel(void) {
 
     int brightness = ksceOledGetBrightness();
     int level;
-    if      (brightness == 0)          level = -1;
-    else if (brightness == 1)          level = 16;
-    else if (brightness < 0x1000)      level = 15;
-    else if (brightness >= 0x10000)    level = 0;
-    else level = 16 - ((brightness + 0x1000) / 0x1000);
+    if      (brightness == 0)           level = -1;  /* screen off */
+    else if (brightness == 1)           level = 16;  /* dim sentinel */
+    else if (brightness <= 0xFFF)       level = 15;  /* lowest on-slider */
+    else if (brightness >= 0x10000)     level = 0;   /* maximum */
+    else {
+        /* brightness = 0x1000 * (15 - level)  [for level 1..14]
+         * → level = 15 - (brightness / 0x1000) */
+        level = 15 - (brightness / 0x1000);
+        if (level < 1)  level = 1;
+        if (level > 14) level = 14;
+    }
 
     EXIT_SYSCALL(state);
     return level;
@@ -353,11 +359,11 @@ int vitabrightOledSetLevel(unsigned int level) {
     if (ksceOledSetBrightness == NULL) { EXIT_SYSCALL(state); return -1; }
 
     unsigned int brightness;
-    if      (level > 16)   brightness = 0;
-    else if (level == 16)  brightness = 1;
-    else if (level == 15)  brightness = 0xFFF;  /* avoids formula giving 0 = screen off */
-    else if (level == 0)   brightness = 0x10000;
-    else                   brightness = 0x1000 * (16 - level) - 0x1000;
+    if      (level > 16)   brightness = 0;          /* off */
+    else if (level == 16)  brightness = 1;           /* dim sentinel */
+    else if (level == 15)  brightness = 0xFFF;       /* just below 0x1000 */
+    else if (level == 0)   brightness = 0x10000;     /* maximum */
+    else                   brightness = (unsigned int)(0x1000 * (15 - (int)level)); /* levels 1-14 */
 
     isDimmingWorkAround = 0;
     ksceOledSetBrightness(brightness);
