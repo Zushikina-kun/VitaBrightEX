@@ -1,7 +1,6 @@
 #include "log.h"
 #include <psp2kern/io/fcntl.h>
-
-extern int ksceIoMkdir(const char *, int);
+#include <psp2kern/io/stat.h>
 
 void log_reset() {
   ksceIoMkdir(LOG_PATH, 6);

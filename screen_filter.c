@@ -349,8 +349,10 @@ static void apply_filter_to_lcd(void) {
     /* Brightness: express as an offset to the black level.
      * IFTU unk00/unk04 fields are the input offset (10-bit, sign TBD).
      * A positive brightness value raises the black level.
-     * We scale: offset = brightness * 0x3FF (full-range mapped to max clamp) */
-    int32_t bright_offset = fp_mul(fp_bright, float_to_fp((float)0x3FF)) >> 16;
+     * Scale by 0x1FF so brightness=±1.0 maps exactly to the ±0x1FF clamp.
+     * (Using 0x3FF would clip the top half of the range and double the
+     * effect in the bottom half.) */
+    int32_t bright_offset = fp_mul(fp_bright, float_to_fp((float)0x1FF)) >> 16;
 
     if (f->panel_enhance > 0) {
         uint8_t ref_out = ips_lookup(128);

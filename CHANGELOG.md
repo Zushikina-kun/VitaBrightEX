@@ -1,83 +1,154 @@
 # Changelog
 
-All notable changes from the original [vitabright](https://github.com/devnoname120/vitabright) are documented here.
+All notable changes from the original [vitabright](https://github.com/devnoname120/vitabright)
+and between VitaBrightEX versions are documented here.
 
-## VitaBrightEX — Initial Release
+---
+
+## VitaBrightEX v1.2
+
+### Fixed
+
+**`vitabrightOledSetLut` destroyed user LUT (critical editor bug)**
+The syscall called `oled_disable_hooks()` + `oled_enable_hooks()` which
+re-read the LUT from disk, overwriting the user-supplied data. Every edit
+in the LUT editor was silently discarded. Fixed: now updates `lookupNew`
+and `lookupBase` in-place and calls `oled_reinject_lut()` directly.
+
+**`oled_enable_hooks` installed hooks even when LUT inject failed**
+If `taiInjectDataForKernel` returned an error, the brightness and power
+hooks were still installed and `g_hooks_active` was set to 1. Fixed: early
+return if inject fails.
+
+**LCD `filter_brightness` scaling was 2× too strong**
+`bright_offset` was scaled by `0x3FF` (1023) then clamped to `±0x1FF` (511),
+wasting the upper half of the brightness range and doubling the effect in
+the lower half. Fixed: scaled by `0x1FF` so `brightness=±1.0` maps exactly
+to the `±0x1FF` clamp.
+
+**`lcd_saturation_boost` config key had no effect**
+The key was parsed and stored but never read in `lcd_apply_color_enhancement`.
+Fixed: now treated as an alias for `lcd_ips_enhance` — either one enables
+the live colour-space driver call.
+
+**`log.c` used `extern` declaration instead of proper header**
+`ksceIoMkdir` was declared with a bare `extern` without a proper include.
+Fixed: uses `<psp2kern/io/stat.h>`.
+
+**LUT editor: texture NULL dereference if resource files missing from VPK**
+`vita2d_load_PNG_file` / `vita2d_load_JPEG_file` results were passed directly
+to `vita2d_draw_texture` with no NULL check. Fixed: allocates a 1×1 black
+placeholder texture if a resource file fails to load.
+
+---
+
+## VitaBrightEX v1.1
+
+### Fixed
+
+**`vitabrightOledGetLevel` off-by-one formula**
+Was: `16 - ((brightness + 0x1000) / 0x1000)`
+Correct: `15 - (brightness / 0x1000)`
+All 17 levels (0–16) now round-trip perfectly between SetLevel and GetLevel.
+
+**LUT editor: `screenLevel` poll timer never updated**
+`lastPollTime` was set once at startup and never reset after each poll,
+causing continuous `vitabrightOledGetLevel` syscall calls every frame.
+Fixed: `lastPollTime` is updated after every 500ms poll.
+
+**LUT editor: uninitialised `pvf` pointer freed on exit**
+`vita2d_free_pvf(pvf)` was called but `pvf` was never assigned.
+Fixed: removed the dead `vita2d_free_pvf` call.
+
+**LUT editor: `writeLut` missing trailing newline (crash issue #7)**
+The last row of the written LUT file had no terminating `\n`, causing
+the vitabright parser to treat it as truncated and crash on reload.
+Fixed: `fprintf(f, "%02X\n", ...)` on every row including the last.
+
+**LUT editor: crash on Vita 2000 (issue #6 — C2-12828-1)**
+App called OLED-only syscalls on an LCD unit. Fixed: detects LCD at startup
+via `vitabrightOledGetLevel` return value; shows LCD info screen instead.
+
+**LUT editor: generic crash error screen replaced with detailed message**
+When `vitabrightOledGetLut` fails, the app now shows the actual return code
+and a clear "check plugin version" message.
 
 ### Added
 
-**Core — Firmware compatibility**
-- Replaced all hardcoded byte offsets with `module_get_export_func()` NID-based
-  resolution from taihenModuleUtils. Plugin now works on firmware 3.60–3.74+
-  without version-switch tables for function addresses.
+**LUT editor: panel type display**
+Shows detected OLED panel name (AMS495QA01 / AMS495QA04 / replacement / unknown).
 
-**OLED (Vita 1000)**
-- `oled/luts/vitabright_lut_p4.txt` — balanced LUT for AMS495QA04 panels
-- `oled/luts/vitabright_lut_p5.txt` — balanced LUT for AMS495QA01 panels
-- `oled/luts/vitabright_lut_p6.txt` — balanced LUT for replacement/aftermarket panels
-- Auto panel-type detection via `sceOledGetDDB` NID; correct LUT loaded automatically
-- White-point normalisation: R/B channels are tracked against the G anchor across
-  all brightness rows, preventing the red-screen effect on affected PCH-1010/1101 units
-- Per-channel colour bias (`color_r/g/b_bias`) for manual tint correction
-- Night/warm mode: amber tint applied below a configurable brightness threshold
+**LUT editor: screen filter editor**
+Press `L2` to cycle through: LUT edit → CCT → Gamma → Contrast → Brightness.
+Hold `R2` for 10× faster adjustment. Changes apply live.
 
-**LCD (Vita 2000)**
-- User-editable brightness curve via `vitabright_lcd_lut.txt` (17 decimal values)
-- Colour space enhancement: `color_space_mode` + `rgb_range_mode` registry writes
-  for full RGB range and wider gamut (IPS-style enhancement)
-- Live colour-space switch via `sceLcdSetDisplayColorSpaceModeForDriver` — no reboot
-- Fixed `lcd_brightness_to_index` to use nearest-neighbour reverse lookup against the
-  actual brightness table rather than incorrect linear 0–65536 mapping
-- Removed unsafe table-scan heuristic that could write to arbitrary kernel memory;
-  replaced with clean versioned offset table
+**LUT editor: `START` saves LUT + filter to disk**
+Saves LUT to `vitabright_lut.txt` and appends/overwrites filter parameters
+in `vitabrightex.cfg`.
 
-**Screen filter (both models) — Rosalina-equivalent**
-- CCT (colour temperature) control: 1000K–25100K via Planckian locus approximation
-- Gamma, contrast, brightness controls with fixed-point arithmetic (no libm)
-- Hardware invert via `sceDisplaySetInvertColorsForDriver`
-- IPS panel colour curve correction (`filter_panel_enhance = 1`) using a measured
-  sRGB linearisation table, equivalent to Luma3DS Rosalina's `ctrToSrgbTable`
-- OLED: filter baked into the 17-row panel LUT; `lookupBase[]` snapshot prevents
-  filter compounding on repeated apply calls
-- LCD: filter written as IFTU 3×3 CSC matrix for per-channel hardware correction
+**LUT editor: `L1`/`R1` jump cursor by 7 bytes** (one colour group at a time).
+
+**LUT editor: LCD colour enhancement status display**
+On Vita 2000, shows active colour enhancement mode and allows filter editing.
+
+---
+
+## VitaBrightEX v1.0 (initial release)
+
+### New vs. original vitabright
+
+**Firmware compatibility (3.60–3.74+)**
+Replaced all hardcoded byte offsets with `module_get_export_func()` NID-based
+resolution from taihenModuleUtils.
+
+**OLED: per-panel LUT auto-selection**
+Reads `supplier_elective_data` from the DDB. Auto-loads `vitabright_lut_p4.txt`
+(AMS495QA04), `vitabright_lut_p5.txt` (AMS495QA01), `vitabright_lut_p6.txt`
+(replacement panels), or `vitabright_lut.txt` (fallback).
+
+**OLED: white-point normalisation**
+Normalises R/B channel ratios against the G anchor across all dim rows.
+Fixes the red-screen effect on affected panels without requiring a custom LUT.
+
+**OLED: colour bias (`color_r/g/b_bias`)**
+Per-channel additive bias for fine-tuning remaining tints.
+
+**OLED: night/warm mode**
+Amber tint applied at and below a configurable brightness threshold.
+
+**OLED: `lookupBase` / `lookupNew` split**
+`lookupBase` holds the clean post-load LUT; `lookupNew` is the currently
+injected state. Prevents screen filter from compounding on every re-apply.
+
+**LCD (Vita 2000): colour enhancement**
+Registry writes for `color_space_mode` and `rgb_range_mode`; live driver
+`SetColorSpaceMode` call with no reboot required.
+
+**LCD: user-editable brightness curve** via `vitabright_lcd_lut.txt`.
+
+**LCD: fixed dim workaround**
+Replaced incorrect linear brightness-to-index mapping with nearest-neighbour
+reverse lookup against the actual brightness table.
+
+**Screen filter (both models)**
+CCT colour temperature (Planckian locus), gamma, contrast, brightness, hardware
+invert via `sceDisplaySetInvertColorsForDriver`. IFTU 3×3 CSC matrix for LCD.
+IPS panel linearisation curve (`filter_panel_enhance`).
 
 **Config system**
-- New `vitabrightex.cfg` file read from `ur0:/tai/` or `ux0:/tai/`
-- All options optional; safe defaults used when file is absent
-- New syscall exports: `vitabrightOledReload`, `vitabrightOledGetPanelType`,
-  `vitabrightLcdGetBrightnessValues`, `vitabrightLcdSetBrightnessValues`,
-  `vitabrightLcdReapplyColor`, `vitabrightFilterGetParams`,
-  `vitabrightFilterSetParams`, `vitabrightFilterReset`
+`vitabrightex.cfg` read from `ur0:/tai/` or `ux0:/tai/`. All options optional.
 
 ### Fixed (bugs in original vitabright)
 
-- **Infinite loop risk** in config parser EOF detection — now uses return-code
-  based termination without consuming extra bytes
-- **Kernel hang** in screen filter fixed-point math — `fp_pow` now clamps the
-  exponent product to `[-8, 8]` before calling `fp_exp`, preventing thousands of
-  loop iterations for very dark LUT rows with high gamma
-- **Incorrect `fp_to_u8`** — spurious `>>8` shift made filter output near-zero;
-  correct conversion is `(v * 255) >> 16` directly from 16.16 format
-- **G channel not filtered** in OLED CCT correction — expanded loop to cover bytes
-  3–5 (green midpoints) with the correct white-point index
-- **Negative float parse bug** — values like `filter_brightness = -0.5` were read
-  as `+0.5` due to `intpart < 0` being false for negative zero; fixed with dedicated
-  `cfg_atof()` that checks the sign character independently
-- **Prefix key match** in config parser — `cfg_strncmp` would match `night_mode_enabled`
-  against `night_mode_enabledXXX`; replaced with exact `cfg_streq`
-- **NULL dereference race** in OLED brightness hook — `ksceOledGetBrightness` pointer
-  is now NULLed before releasing the hook handle, and the hook body guards for NULL
-- **LUT compounding** in screen filter — `apply_filter_to_oled_lut` now copies
-  `lookupBase → lookupNew` before each apply so repeated calls don't drift
-- **Missing filter re-apply** after `vitabrightOledReload` — screen filter config
-  is now reloaded and reapplied alongside the LUT
-- **Userland `is_oled` trust** in `vitabrightFilterSetParams` — now uses kernel-side
-  `g_is_oled` set at boot instead of accepting the caller's value
-
-### Changed
-
-- `CMakeLists.txt` minimum version bumped to 3.5 for compatibility with CMake 4.x
-- `module.yml` version bumped to 3.0 with all new syscall exports listed
-- `oled/luts/vitabright_lut.txt` replaced with improved balanced default LUT
-- `oled/parser.c` now has full fallback chain: panel-specific → generic → error;
-  CR/LF tolerant for Windows-encoded files
+- Config EOF loop could consume extra bytes (C-1)
+- `fp_to_u8` spurious `>>8` produced near-zero filter output (M-3)
+- G channel not included in CCT white-point correction (H-2)
+- `fp_pow` could enter near-infinite loop for dark LUT rows with high gamma (L-4)
+- Negative float config values (e.g. `-0.5`) parsed as positive (M-5)
+- `cfg_strncmp` prefix-matched longer keys (H-5)
+- NULL dereference in OLED brightness hook after disable (C-5)
+- LUT compounding on repeated screen filter apply (C-4)
+- Missing filter re-apply after `vitabrightOledReload` (M-7)
+- Userland `is_oled` accepted from untrusted caller in filter syscalls (L-5)
+- LCD table scan used wrong segment base, could inject into arbitrary memory (C-3)
+- `ref[3] == 0` not guarded in white-point normalisation (H-3)

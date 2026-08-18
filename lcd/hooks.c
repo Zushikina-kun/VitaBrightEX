@@ -138,7 +138,9 @@ static void lcd_load_lut(void) {
 static void lcd_apply_color_enhancement(void) {
     int do_csm   = g_config.lcd_color_space_mode;
     int do_rgb   = g_config.lcd_rgb_range_mode;
-    int do_live  = g_config.lcd_ips_enhance;
+    /* lcd_saturation_boost is an alias for lcd_ips_enhance — either enables
+     * the live colour-space driver call */
+    int do_live  = g_config.lcd_ips_enhance || g_config.lcd_saturation_boost;
 
     if (!do_csm && !do_rgb && !do_live) return;
 

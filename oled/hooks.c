@@ -289,6 +289,11 @@ void oled_enable_hooks(void) {
                                         lut_off, lookupNew, sizeof(lookupNew));
     LOG("[OLED] taiInjectData: 0x%08X\n", lut_inject);
 
+    if (lut_inject < 0) {
+        LOG("[OLED] LUT inject failed — aborting hook installation\n");
+        return;
+    }
+
     ksceOledSetBrightness(ksceOledGetBrightness());
 
     oled_set_brightness_hook = taiHookFunctionExportForKernel(KERNEL_PID,
@@ -385,11 +390,14 @@ int vitabrightOledSetLut(unsigned char oledLut[LUT_SIZE]) {
     int state;
     ENTER_SYSCALL(state);
 
-    oled_disable_hooks();
+    if (!g_hooks_active) { EXIT_SYSCALL(state); return -1; }
+
+    /* Update lookupNew and lookupBase in-place then re-inject.
+     * Do NOT call oled_disable/enable_hooks here — that would re-read the
+     * LUT from disk and destroy the user-supplied data. */
     ksceKernelMemcpyUserToKernel(lookupNew, (const void *)oledLut, LUT_SIZE);
-    /* Also update base so screen filter doesn't overwrite user's LUT */
     lut_memcpy(lookupBase, lookupNew, LUT_SIZE);
-    oled_enable_hooks();
+    oled_reinject_lut();
 
     EXIT_SYSCALL(state);
     return 0;
