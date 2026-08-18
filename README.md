@@ -200,32 +200,45 @@ night_mode_threshold = 6   # row 0–16; higher = activates at brighter levels
 
 ## LUT Editor companion app — controls
 
-The app has **4 tabs** — switch with **L2/R2** (or **L1/R1** on the LUT tab).
+The app has **2 tabs** — switch with **L2 / R2**.
 
-| Tab | What it does |
-|---|---|
-| **Colour** | Pick a colour temperature preset. Applies to screen instantly as you scroll. |
-| **Enhance** | Pick a display profile that stacks on your colour choice (OLED Boost, IPS Fix, VA Punch, TN, Night etc.) |
-| **Advanced** | Fine-tune gamma / contrast / brightness sliders |
-| **LUT** | Raw OLED gamma byte editor — for power users only |
+**Tab 1: Screen filters menu** (like Rosalina)
 
-### Controls
+Scrollable list — Up/Down to move the `>` cursor, X to apply.
+
+- The status bar at the bottom shows your **detected hardware** (Vita 1000 OLED with panel model, or Vita 2000 LCD) and the **recommended setting for your specific panel**
+- Items marked `[rec]` are recommended for your detected panel — start there
+- Active setting is marked with `<` on the right
+- `[IPS recommended]` options are for Vita 2000 LCD
+- `[OLED]` options are for Vita 1000 OLED panels
+- `[Night]` reduces blue light and eye strain in dark environments
+
+**Tab 2: Advanced configuration** (like Rosalina's advanced screen)
+
+Left/Right adjust the selected value. Hold R1 for faster. Up/Down change row.
+
+**Global controls:**
 
 | Button | Action |
 |---|---|
-| Up / Down | Scroll through presets / move row selector |
-| Left / Right | Adjust custom CCT value (Colour tab) or slider value (Advanced tab) |
-| L2 / R2 | Switch tab left / right (all tabs except LUT) |
-| **L1 / R1** | **Switch tab from the LUT tab** (L2/R2 edit bytes there) |
-| X | Apply current settings **and save to disk** — persists across reboots |
-| Select | Cycle background test image |
-| Triangle | Reset all filters to neutral (Colour and Enhance tabs) or reset sliders to enhancement baseline (Advanced) |
-| Circle | Reload LUT and config from disk (LUT tab) |
-| Start | Save and exit app |
+| Up / Down | Scroll list / change row |
+| Left / Right | Adjust custom CCT (Tab 1) or slider value (Tab 2) |
+| R1 (held) | 10× faster adjustment |
+| L2 / R2 | Switch tab |
+| X | Apply + save to disk — persists across reboots |
+| Triangle | **Factory reset** — restores clean LUT from your panel file, clears all filter settings |
+| Select | Cycle background preview image |
+| Start | Save and exit |
 
-On the LUT tab: L2 = increase byte value, R2 = decrease byte value.
+**What the app detects automatically:**
 
-On **Vita 2000 (LCD)**, the LUT tab shows a "not available" notice — use Colour and Enhance tabs instead.
+| Hardware | Detection | Recommendation |
+|---|---|---|
+| Vita 1000, panel AMS495QA01 | DDB `0x05` | OLED Boost |
+| Vita 1000, panel AMS495QA04 | DDB `0x04` | OLED Boost |
+| Vita 1000, replacement OLED | DDB `0x06` | sRGB Standard |
+| Vita 1000, unknown panel | Other DDB | OLED Boost |
+| Vita 2000 LCD | Boot type flag | IPS Fix |
 
 ---
 
